@@ -19,13 +19,30 @@ name: PR module builds
 #
 # Only submodules whose gitlink changed in the PR are built — a PR that
 # touches no submodule builds nothing.
+#
+# It can also be run by hand (Actions UI, or
+# `gh workflow run pr-build.yml -f module=<name>`) to build one named
+# submodule at the ref the run is started from — same build-only mode,
+# no pull request needed.
 
 on:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "Submodule to build (the <name> in submodules/<name>)."
+        required: true
+        type: string
+      variants:
+        description: "Comma-separated variants to build. Empty = all four."
+        required: false
+        type: string
+        default: ""
 
-# A fresh push to the PR cancels the build still running for it.
+# A fresh push to the PR cancels the build still running for it. A manual
+# run has no PR number, so it gets a group of its own and cancels nothing.
 concurrency:
-  group: pr-build-${{ github.event.pull_request.number }}
+  group: pr-build-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -36,6 +53,8 @@ jobs:
     # Which submodules changed in this PR — just their names; the action
     # works out which platforms each one exposes. A plain git diff, so it
     # runs on a GitHub-hosted runner and doesn't occupy a build machine.
+    # On a manual run there is no diff: the one module named in the
+    # `module` input is built instead.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -54,22 +73,40 @@ jobs:
         name: List modified submodules
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Passed through the environment, never interpolated into the
+          # script, so a hand-typed input can't inject shell.
+          INPUT_MODULE: ${{ inputs.module }}
         run: |
           set -euo pipefail
-          # Submodule gitlinks that changed between the PR base and head.
-          # A pointer bump shows up as a changed path `submodules/<name>`.
+          # Paths that are submodules at HEAD. For a PR this drops a
+          # submodule the PR REMOVED (gone from .gitmodules), which has
+          # nothing to build; for a manual run it validates the input.
           # Plain `while read` (not `mapfile`) so this runs on bash 3.2 too.
-          changed=()
-          while IFS= read -r line; do [[ -n "$line" ]] && changed+=("$line"); done \
-            < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'submodules/*' \
-                | awk -F/ 'NF>=2 {print $1"/"$2}' | sort -u)
-          # Paths that are still submodules at HEAD — this drops a submodule
-          # the PR REMOVED (gone from .gitmodules), which has nothing to build.
           known=()
           while IFS= read -r line; do [[ -n "$line" ]] && known+=("$line"); done \
             < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
+
+          changed=()
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Manual run: the one named module. Accept `<name>` or
+            # `submodules/<name>`; an unknown name is an error, not a
+            # silent "nothing to build".
+            path="submodules/${INPUT_MODULE#submodules/}"
+            if ! printf '%s\n' "${known[@]:-}" | grep -qxF "$path"; then
+              echo "::error::'$INPUT_MODULE' is not a submodule in .gitmodules."
+              exit 1
+            fi
+            changed+=("$path")
+          else
+            # Submodule gitlinks that changed between the PR base and head.
+            # A pointer bump shows up as a changed path `submodules/<name>`.
+            while IFS= read -r line; do [[ -n "$line" ]] && changed+=("$line"); done \
+              < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'submodules/*' \
+                  | awk -F/ 'NF>=2 {print $1"/"$2}' | sort -u)
+          fi
 
           modules='[]'
           for path in "${changed[@]:-}"; do
@@ -107,8 +144,9 @@ jobs:
       module_path: submodules/${{ matrix.module }}
       # The upper bound — the action keeps only the variants the module's
       # flake exposes. windows-x86_64 must be listed explicitly: it isn't
-      # in the action's default variant list.
-      variants: darwin-arm64,linux-amd64,linux-arm64,windows-x86_64
+      # in the action's default variant list. A manual run may narrow it
+      # with the `variants` input.
+      variants: ${{ inputs.variants || 'darwin-arm64,linux-amd64,linux-arm64,windows-x86_64' }}
       publish: false
       # A check always builds, even for a version that's already released.
       skip_if_published: false

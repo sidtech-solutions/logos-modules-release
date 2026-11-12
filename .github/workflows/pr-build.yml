@@ -150,14 +150,14 @@ jobs:
       publish: false
       # A check always builds, even for a version that's already released.
       skip_if_published: false
-      # Our bladerunner runners. windows-x86_64 is a mingw CROSS build, so
-      # it runs on the bladerunner-linux runner alongside linux-amd64.
-      # darwin-arm64 runs on the bladerunner-macos runner. linux-arm64
-      # has no runner of ours and falls back to the action's
-      # GitHub-hosted ubuntu-24.04-arm.
+      # Our bladerunner runners, one per OS: linux-amd64 on
+      # bladerunner-linux, windows-x86_64 on bladerunner-windows,
+      # darwin-arm64 on bladerunner-macos. linux-arm64 has no runner of
+      # ours and falls back to the action's GitHub-hosted
+      # ubuntu-24.04-arm.
       build_runners: >-
         {"linux-amd64": ["bladerunner-linux"],
-        "windows-x86_64": ["bladerunner-linux"],
+        "windows-x86_64": ["bladerunner-windows"],
         "darwin-arm64": ["bladerunner-macos"]}
       # setup (flake probe) and the merge job run on the bladerunner-linux
       # runner too, for a warm Nix store.
